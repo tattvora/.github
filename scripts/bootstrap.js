@@ -114,7 +114,7 @@ on:
 
 jobs:
   label:
-    uses: ${ORG}/.github/.github/workflow/pr-labeler-reusable.yml@${WORKFLOW_BRANCH}
+    uses: ${ORG}/.github/.github/workflows/pr-labeler-reusable.yml@${WORKFLOW_BRANCH}
     permissions:
       pull-requests: write
 `;
