@@ -1,0 +1,22 @@
+# .github/workflows/bootstrap-repo.yml
+name: Bootstrap New Repo
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_name:
+        description: "Repo name to bootstrap"
+        required: true
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run bootstrap for single repo
+        env:
+          GITHUB_TOKEN: ${{ secrets.BOOTSTRAP_TOKEN }}
+          ORG: ${{ github.repository_owner }}
+          TARGET_REPO: ${{ inputs.repo_name }}
+        run: node scripts/bootstrap.js

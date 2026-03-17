@@ -1,0 +1,91 @@
+name: Reusable PR Labeler
+
+on:
+  workflow_call:
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: Label PR based on type checklist or branch name
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body    = context.payload.pull_request.body || '';
+            const branch  = context.payload.pull_request.head.ref || '';
+
+            // Maps PR template checkboxes → labels
+            const checkboxLabelMap = [
+              { pattern: /- \[x\] \*\*Feature\*\*/i,  label: 'feature'  },
+              { pattern: /- \[x\] \*\*Fix\*\*/i,      label: 'fix'      },
+              { pattern: /- \[x\] \*\*Hotfix\*\*/i,   label: 'hotfix'   },
+              { pattern: /- \[x\] \*\*Refactor\*\*/i, label: 'refactor' },
+              { pattern: /- \[x\] \*\*Perf\*\*/i,     label: 'perf'     },
+              { pattern: /- \[x\] \*\*Infra\*\*/i,    label: 'infra'    },
+              { pattern: /- \[x\] \*\*Docs\*\*/i,     label: 'docs'     },
+              { pattern: /- \[x\] \*\*Chore\*\*/i,    label: 'chore'    },
+            ];
+
+            // Fallback: infer label from branch name (Tattvora naming convention)
+            const branchLabelMap = [
+              { pattern: /^feature\//i,  label: 'feature'  },
+              { pattern: /^fix\//i,      label: 'fix'      },
+              { pattern: /^hotfix\//i,   label: 'hotfix'   },
+              { pattern: /^refactor\//i, label: 'refactor' },
+              { pattern: /^docs\//i,     label: 'docs'     },
+              { pattern: /^chore\//i,    label: 'chore'    },
+              { pattern: /^release\//i,  label: 'release'  },
+            ];
+
+            // Priority 1: checkbox match
+            let matched = checkboxLabelMap
+              .filter(({ pattern }) => pattern.test(body))
+              .map(({ label }) => label);
+
+            // Priority 2: branch name fallback
+            if (matched.length === 0) {
+              matched = branchLabelMap
+                .filter(({ pattern }) => pattern.test(branch))
+                .map(({ label }) => label);
+
+              if (matched.length > 0) {
+                console.log(`No checkbox matched. Inferred labels from branch "${branch}": ${matched}`);
+              }
+            }
+
+            if (matched.length === 0) {
+              console.log('No labels matched from checkbox or branch name. Skipping.');
+              return;
+            }
+
+            // Remove stale auto-applied labels on PR edit
+            const autoLabels    = [...checkboxLabelMap, ...branchLabelMap].map(({ label }) => label);
+            const existingLabels = context.payload.pull_request.labels.map(l => l.name);
+            const toRemove      = existingLabels.filter(l => autoLabels.includes(l) && !matched.includes(l));
+
+            for (const label of toRemove) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo:  context.repo.repo,
+                  issue_number: context.payload.pull_request.number,
+                  name: label,
+                });
+                console.log(`Removed stale label: ${label}`);
+              } catch (err) {
+                console.warn(`Could not remove label "${label}": ${err.message}`);
+              }
+            }
+
+            // Apply matched labels
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              labels: matched,
+            });
+
+            console.log(`Applied labels: ${matched}`);
