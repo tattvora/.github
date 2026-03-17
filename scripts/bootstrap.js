@@ -33,6 +33,7 @@ const TARGET_REPO = process.env.TARGET_REPO || null; // single repo mode
 const TASKS = process.env.TASKS
     ? process.env.TASKS.split(',').map(t => t.trim())
     : ['labels', 'template', 'labeler', 'ci', 'gitignore', 'editorconfig', 'settings', 'protection'];
+const FORCE = process.env.FORCE === 'true';
 
 if (!GITHUB_TOKEN || !ORG) {
     console.error('ERROR: GITHUB_TOKEN and ORG env vars are required.');
@@ -155,45 +156,116 @@ jobs:
         run: npm run build --if-present
 `;
 
-const GITIGNORE = `# Dependencies
+const GITIGNORE = `# ── Dependencies ─────────────────────────────────────────────
 node_modules/
 .pnp
 .pnp.js
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
 
-# Build outputs
+# ── Build Outputs ─────────────────────────────────────────────
 dist/
 build/
 out/
 .next/
 .nuxt/
+.output/
+.turbo/
+storybook-static/
 
-# Environment
+# ── TypeScript ────────────────────────────────────────────────
+*.tsbuildinfo
+tsconfig.tsbuildinfo
+
+# ── Go ────────────────────────────────────────────────────────
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+go.work.sum
+vendor/
+
+# ── React ─────────────────────────────────────────────────────
+.cache/
+public/hot/
+
+# ── Prisma ────────────────────────────────────────────────────
+prisma/migrations/dev/
+
+# ── Environment ───────────────────────────────────────────────
 .env
 .env.local
+.env.development
+.env.production
+.env.staging
 .env.*.local
 !.env.example
 
-# Logs
+# ── Logs ──────────────────────────────────────────────────────
 logs/
 *.log
 npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
 
-# OS
+# ── Test & Coverage ───────────────────────────────────────────
+coverage/
+.nyc_output/
+*.lcov
+jest-stare/
+test-results/
+playwright-report/
+playwright/.cache/
+
+# ── AWS ───────────────────────────────────────────────────────
+.aws-sam/
+cdk.out/
+.serverless/
+.chalice/deployments/
+sam-app/.aws-sam/
+
+# ── Docker ────────────────────────────────────────────────────
+.docker/
+docker-compose.override.yml
+
+# ── OS ────────────────────────────────────────────────────────
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
 Thumbs.db
+ehthumbs.db
+Desktop.ini
 
-# IDE
+# ── IDE ───────────────────────────────────────────────────────
 .idea/
 .vscode/
 *.swp
 *.swo
+*.vim
+.history/
+*.code-workspace
 
-# Prisma
-prisma/migrations/dev/
-
-# AWS
-.aws-sam/
-cdk.out/
+# ── Misc ──────────────────────────────────────────────────────
+*.pem
+*.key
+*.cert
+.clinic/
+.clinic*
+0x/
+tmp/
+temp/
+.temp/
+.tmp/
 `;
 
 const EDITORCONFIG = `root = true
@@ -422,6 +494,61 @@ async function bootstrapBranchProtection(repo, defaultBranch) {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 /**
+ * Checks which tasks are already completed for a repo.
+ * Returns a Set of task names that can be skipped.
+ *
+ * @param {string} repo - Repo name
+ * @returns {Promise<Set<string>>} Set of already-completed task names
+ */
+async function getCompletedTasks(repo) {
+    const completed = new Set();
+
+    // Run all checks in parallel for speed
+    const [
+        labels,
+        template,
+        labeler,
+        ci,
+        gitignore,
+        editorconfig,
+        rulesets,
+    ] = await Promise.allSettled([
+        gh('GET', `/repos/${ORG}/${repo}/labels?per_page=100`),
+        getFileInfo(repo, '.github/PULL_REQUEST_TEMPLATE.md'),
+        getFileInfo(repo, '.github/workflows/pr-labeler.yml'),
+        getFileInfo(repo, '.github/workflows/ci.yml'),
+        getFileInfo(repo, '.gitignore'),
+        getFileInfo(repo, '.editorconfig'),
+        gh('GET', `/repos/${ORG}/${repo}/rulesets`),
+    ]);
+
+    // Labels — completed if all 9 expected labels exist
+    if (labels.status === 'fulfilled' && labels.value) {
+        const existingNames = labels.value.map(l => l.name);
+        const allPresent = LABELS.every(l => existingNames.includes(l.name));
+        if (allPresent) completed.add('labels');
+    }
+
+    // File-based tasks — completed if file exists
+    if (template.status === 'fulfilled' && template.value) completed.add('template');
+    if (labeler.status === 'fulfilled' && labeler.value) completed.add('labeler');
+    if (ci.status === 'fulfilled' && ci.value) completed.add('ci');
+    if (gitignore.status === 'fulfilled' && gitignore.value) completed.add('gitignore');
+    if (editorconfig.status === 'fulfilled' && editorconfig.value) completed.add('editorconfig');
+
+    // Rulesets — completed if protect-main and protect-develop exist
+    if (rulesets.status === 'fulfilled' && rulesets.value) {
+        const rulesetNames = rulesets.value.map(r => r.name);
+        if (rulesetNames.includes('protect-main') && rulesetNames.includes('protect-develop')) {
+            completed.add('protection');
+        }
+    }
+
+    return completed;
+}
+
+
+/**
  * Runs all enabled bootstrap tasks against a single repo.
  * Each task is isolated — failure in one does not block others.
  *
@@ -430,6 +557,11 @@ async function bootstrapBranchProtection(repo, defaultBranch) {
  */
 async function processRepo(repo) {
     const log = [];
+
+    const completed = await getCompletedTasks(repo.name);
+    if (completed.size > 0) {
+        log.push(`  ~ already completed: ${[...completed].join(', ')}`);
+    }
 
     const taskMap = {
         labels: () => bootstrapLabels(repo.name),
@@ -444,6 +576,9 @@ async function processRepo(repo) {
 
     for (const task of TASKS) {
         if (!taskMap[task]) { log.push(`  ✗ unknown task: ${task}`); continue; }
+        if (completed.has(task) && !FORCE) {
+            continue; // silently skip — already logged above
+        }
         try {
             const results = await taskMap[task]();
             log.push(...results);
