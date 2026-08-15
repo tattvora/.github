@@ -21,17 +21,6 @@ Built for growing startups operating on AWS.
 
 ---
 
-## 🏗 Architecture Overview
-
-Tattvora follows a containerized, service-first architecture:
-```
-Startup CTO
-↓
-Tattvora Cloud Intelligence Platform
-↓ (Secure STS AssumeRole)
-Customer AWS Account
-```
-
 ### Core Components
 
 - 🟦 **Platform API** (Node.js)
